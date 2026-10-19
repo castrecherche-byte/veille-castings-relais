@@ -1,0 +1,43 @@
+# Relais newsletters : toutes les heures, lit la boite Gmail dediee et publie les annonces
+# sur GitHub Pages (https://<compte>.github.io/<depot>/annonces.json).
+name: Relais newsletters
+
+on:
+  schedule:
+    - cron: "7 * * * *"   # chaque heure, a h+07
+  workflow_dispatch:       # bouton « Run workflow » pour le lancer a la main
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+  actions: write           # pour que GitHub ne mette pas la tache en pause apres 60 jours sans activite
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  publier:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Lire la boite et preparer les annonces
+        run: python -m casting_watch.relais --out site/annonces.json
+        env:
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deploy
+        uses: actions/deploy-pages@v4
+      - name: Garder la tache active
+        uses: liskin/gh-workflow-keepalive@v1
