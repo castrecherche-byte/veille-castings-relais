@@ -6,8 +6,10 @@
   passe) et en refait des annonces.
 """
 import argparse
+import hashlib
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,6 +25,44 @@ FIELDS = ("source_name", "source_url", "title", "url", "text", "fetched_at", "de
 
 class RelayError(RuntimeError):
     pass
+
+
+HIDDEN = "[adresse masquée]"
+# Liens personnels des newsletters (desinscription, preferences, suivi) : jamais publies.
+PERSONAL_LINK = re.compile(
+    r"https?://\S*(?:unsubscri|desinscri|désinscri|desabonn|désabonn|optout|opt-out|preference|manage|"
+    r"[?&](?:e|email|mail|u|uid|token|t|hash|sub|subscriber)=)\S*",
+    re.IGNORECASE,
+)
+
+
+def anonymize(text: str, address: str) -> str:
+    """Retire l'adresse de la boite (et son identifiant) et les liens personnels avant publication."""
+    if not text:
+        return text
+    text = PERSONAL_LINK.sub("", text)
+    if address:
+        local = address.split("@")[0]
+        text = re.sub(re.escape(address), HIDDEN, text, flags=re.IGNORECASE)
+        text = re.sub(rf"\b{re.escape(local)}\b", HIDDEN, text, flags=re.IGNORECASE)
+    return text
+
+
+def anonymized(listing: RawListing, address: str) -> RawListing:
+    url = listing.url
+    # Lien personnel, ou lien vers l'e-mail dans la boite du relais (inutile pour les autres) :
+    # remplace par un identifiant stable, sans rien de personnel.
+    if PERSONAL_LINK.fullmatch(url) or "mail.google.com" in url or (address and address.lower() in url.lower()):
+        url = "newsletter:" + hashlib.sha1(f"{listing.title}\n{listing.text}".encode("utf-8")).hexdigest()[:16]
+    return RawListing(
+        source_name=listing.source_name,
+        source_url=listing.source_url,
+        title=anonymize(listing.title, address),
+        url=url,
+        text=anonymize(listing.text, address),
+        fetched_at=listing.fetched_at,
+        detail_text=anonymize(listing.detail_text, address),
+    )
 
 
 def to_json(listings: list[RawListing], counts: dict[str, int]) -> dict:
@@ -47,7 +87,7 @@ def publier(out_path: str, imap_factory=None) -> dict:
         raise RelayError("variables GMAIL_ADDRESS et GMAIL_APP_PASSWORD manquantes (secrets du relais)")
     options = {"imap_factory": imap_factory} if imap_factory else {}
     listings, counts = fetch_newsletter_listings(address, password, **options)
-    data = to_json(listings, counts)
+    data = to_json([anonymized(listing, address) for listing in listings], counts)
     target = Path(out_path)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")

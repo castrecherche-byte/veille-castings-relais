@@ -71,6 +71,8 @@ from casting_watch.decouverte import discover, mentions_in_texts
 from casting_watch.decouverte import queries_for_day as discovery_queries_for_day
 from casting_watch.infos import build_info
 from casting_watch.newsletters import NEWSLETTER_SOURCE_URL, fetch_newsletter_listings
+from casting_watch.relais import RelayError
+from casting_watch.relais import lire as read_relay
 from casting_watch.origine import OriginFinder, access_level, search_links
 
 NEWSLETTER_APPLY_NOTE = "Suivre les consignes de la newsletter (adresse ou lien indiqué dans l'annonce, voir aussi l'e-mail)."
@@ -116,6 +118,15 @@ def run_search(config_path: str) -> dict:
         }
 
     newsletters = {"connecte": False, "emails": {}}
+    relay_url = relay_status(config_path)["url"]
+    if relay_url:
+        try:
+            relayed, published_at = read_relay(relay_url)
+        except RelayError as error:
+            errors.append(f"Relais newsletters : {error}")
+        else:
+            listings.extend(relayed)
+            newsletters = {"connecte": True, "emails": {}, "annonces": len(relayed), "relais": published_at}
     gmail = get_meta(connection, GMAIL_META)
     if gmail.get("app_password"):
         try:
@@ -124,7 +135,12 @@ def run_search(config_path: str) -> dict:
             errors.append(f"Newsletters (Gmail) : {error}")
         else:
             listings.extend(letters)
-            newsletters = {"connecte": True, "emails": counts, "annonces": len(letters)}
+            newsletters = {
+                **newsletters,
+                "connecte": True,
+                "emails": counts,
+                "annonces": newsletters.get("annonces", 0) + len(letters),
+            }
 
     criteria = SearchCriteria.from_config(config)
     accepted = 0
@@ -286,6 +302,28 @@ def connect_websearch(config_path: str, key: str, transport=None) -> None:
     tavily_search(key, "casting enfant Paris", max_results=1, transport=transport)  # verifie la cle
     config = load_config(config_path)
     set_meta(connect(resolve_data_path(config, "database_path")), WEB_META, {"key": key})
+
+
+RELAY_META = "relais_"
+
+
+def relay_status(config_path: str) -> dict:
+    """Adresse du relais : celle enregistree dans la page, sinon celle du config (version partagee)."""
+    config = load_config(config_path)
+    saved = get_meta(connect(resolve_data_path(config, "database_path")), RELAY_META).get("url")
+    default = ((config.get("relais") or {}).get("url") or "").strip()
+    url = default if saved is None else saved
+    return {"url": url, "par_defaut": saved is None and bool(default)}
+
+
+def save_relay_url(config_path: str, url: str) -> None:
+    url = url.strip()
+    if url and not url.startswith("https://"):
+        raise ValueError("L'adresse du relais doit commencer par https://")
+    if url:
+        read_relay(url)  # verifie qu'elle repond
+    config = load_config(config_path)
+    set_meta(connect(resolve_data_path(config, "database_path")), RELAY_META, {"url": url})
 
 
 def disconnect_websearch(config_path: str) -> None:
